@@ -30,6 +30,7 @@ const fs = require('fs');
 const multer = require('multer');
 
 const app = express();
+app.use(cors());
 const port = Number(process.env.PORT || 4000);
 const uploadDirectory = path.join(__dirname, 'uploads');
 fs.mkdirSync(uploadDirectory, { recursive: true });
