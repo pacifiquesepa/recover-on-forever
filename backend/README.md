@@ -1,6 +1,6 @@
 # FKAMS Backend
 
-Node.js + Express + MySQL API for Forever King Academy Management System.
+Node.js + Express + PostgreSQL API for Forever King Academy Management System. The production database is hosted on Supabase.
 
 ## Setup
 
@@ -10,24 +10,36 @@ Node.js + Express + MySQL API for Forever King Academy Management System.
 npm install
 ```
 
-2. Create the database and tables:
+2. Configure Supabase PostgreSQL in `.env`:
 
-```powershell
-mysql -u root -p < schema.sql
+```env
+DB_HOST=aws-1-eu-west-1.pooler.supabase.com
+DB_PORT=5432
+DB_USER=postgres.project-ref
+DB_PASSWORD=your-supabase-password
+DB_NAME=postgres
+DB_SSL=true
 ```
 
-After the base schema, apply later migrations in order:
+The backend uses SSL for Supabase. Do not commit `.env`; rotate any database password that has been exposed.
+
+3. Create the database and tables:
 
 ```powershell
-mysql -u root -p fkams < migrations/002_admission_profiles.sql
-mysql -u root -p fkams < migrations/003_publications.sql
-mysql -u root -p fkams < migrations/006_password_reset.sql
-mysql -u root -p fkams < migrations/007_extend_tests_schema.sql
-mysql -u root -p fkams < migrations/008_class_subjects.sql
-mysql -u root -p fkams < migrations/009_complete_test_questions.sql
+node generate-postgres-schema.js
+psql "$env:DATABASE_URL" -f schema.postgres.sql
 ```
 
-3. Copy `.env.example` to `.env` and set a long random `JWT_SECRET` plus the MySQL credentials.
+For a newly created Supabase database, the API also applies the base schema and numbered migrations at startup. The generated schema file is useful for a first manual import or inspection.
+
+After the base schema, apply later migrations in order when importing manually:
+
+```powershell
+node generate-postgres-schema.js
+psql "$env:DATABASE_URL" -f schema.postgres.sql
+```
+
+3. Copy `.env.example` to `.env` and set a long random `JWT_SECRET` plus the Supabase credentials.
 
 For public applications, configure Gmail SMTP in `backend/.env`. Use a Google App Password, not the normal Gmail password:
 
@@ -138,6 +150,6 @@ For local development, `OTP_PROVIDER=console` prints the code in the backend ter
 - SQL values use parameterized queries.
 - Helmet, restricted CORS, JSON size limits and login attempt throttling are enabled.
 
-Automatic backups should be configured at the infrastructure level, for example with a scheduled `mysqldump` job and encrypted off-site storage. Do not commit `.env` or database backups.
+Automatic backups should be configured at the infrastructure level, for example with a scheduled `pg_dump` job and encrypted off-site storage. Do not commit `.env` or database backups.
 
-The document endpoint stores metadata and a `storageKey`; connect that key to private object storage (or a protected file service) before production. The schema intentionally keeps file bytes outside MySQL.
+The document endpoint stores metadata and a `storageKey`; connect that key to private object storage (or a protected file service) before production. The schema intentionally keeps file bytes outside PostgreSQL.

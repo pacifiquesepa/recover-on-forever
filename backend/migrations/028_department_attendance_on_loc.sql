@@ -46,8 +46,4 @@ CREATE TABLE IF NOT EXISTS department_attendance_scores (
 ALTER TABLE department_attendance
   ADD COLUMN IF NOT EXISTS morning_warning_sent_date DATE NULL,
   ADD COLUMN IF NOT EXISTS afternoon_warning_sent_date DATE NULL,
-  ADD COLUMN IF NOT EXISTS attendance_settings_updated_at DATETIME NULL,
-  MODIFY COLUMN score_deduction DECIMAL(5,2) UNSIGNED NOT NULL DEFAULT 0.00;
-
-ALTER TABLE department_attendance_scores
-  MODIFY COLUMN score DECIMAL(6,2) NOT NULL DEFAULT 100.00;
+  ADD COLUMN IF NOT EXISTS attendance_settings_updated_at DATETIME NULL;

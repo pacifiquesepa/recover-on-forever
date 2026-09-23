@@ -6,7 +6,7 @@ const cors = require('cors');
 const helmet = require('helmet');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const mysql = require('mysql2/promise');
+const { createPool } = require('./db');
 const crypto = require('crypto');
 const nodemailer = require('nodemailer');
 const whatsappModule = (() => {
@@ -62,16 +62,7 @@ if (!jwtSecret) {
   console.warn('JWT_SECRET is not set. Login endpoints are disabled until the environment is configured.');
 }
 
-const pool = mysql.createPool({
-  host: process.env.DB_HOST || 'localhost',
-  port: Number(process.env.DB_PORT || 3306),
-  user: process.env.DB_USER || 'root',
-  password: process.env.DB_PASSWORD || '',
-  database: process.env.DB_NAME || 'fkams',
-  waitForConnections: true,
-  connectionLimit: 10,
-  enableKeepAlive: true,
-});
+const pool = createPool();
 
 async function ensurePermissionRequestsTable() {
   await pool.query(`
@@ -212,7 +203,7 @@ async function notifyPermissionDecision({ request, recipientId, status }) {
       to: user[0].phone,
       name: user[0].fullName || 'Student',
       message,
-    }).catch(() => {});
+    }).catch(() => { });
   }
   console.log(`[FKAMS WhatsApp] ${title}: ${message}`);
   return { title, message };
@@ -351,7 +342,7 @@ async function sendVisitorRequestNotification({ to, name, status, language = 'en
       to,
       name,
       message: text,
-    }).catch(() => {});
+    }).catch(() => { });
   }
 
   return text;
@@ -843,7 +834,7 @@ app.get('/api/dashboard', requireAuth, authorize('admin', 'dos', 'accountant'), 
       UNION ALL SELECT 'application', applicant_name, CONCAT('Application ', status), created_at FROM applications
       UNION ALL SELECT 'notice', title, 'Notice published', published_at FROM notices
       UNION ALL SELECT 'finance', reference, 'Payment received', paid_at FROM fees
-      ORDER BY createdAt DESC LIMIT 8`),
+      ORDER BY "createdAt" DESC LIMIT 8`),
     pool.query(`SELECT 'fee' AS type, CONCAT(COUNT(*), ' unpaid invoices') AS title, 'Review outstanding fees' AS action, COUNT(*) AS quantity FROM invoices WHERE status IN ('unpaid', 'overdue')
       UNION ALL SELECT 'staff', 'Inactive staff detected', 'Review staff attendance', COUNT(*) FROM staff_attendance WHERE attendance_date = CURRENT_DATE AND status = 'absent'
       UNION ALL SELECT 'inventory', 'Low stock items', 'Open inventory', COUNT(*) FROM inventory_items WHERE quantity <= reorder_level
@@ -881,8 +872,8 @@ app.post('/api/users', requireAuth, authorize('admin', 'dos'), async (req, res) 
     const [result] = await pool.query('INSERT INTO users (full_name, username, email, phone, password_hash, role) VALUES (?, ?, ?, ?, ?, ?)', [req.body.fullName.trim(), username, email, req.body.phone?.trim() || null, passwordHash, req.body.role]);
     res.status(201).json({ id: result.insertId, message: 'User created.' });
   } catch (error) {
-    if (error.code === 'ER_DUP_ENTRY') {
-      const duplicateField = error.message.includes('username') ? 'username' : 'email';
+    if (error.code === 'ER_DUP_ENTRY' || error.code === '23505') {
+      const duplicateField = /username/i.test(error.constraint || error.detail || error.message) ? 'username' : 'email';
       return res.status(409).json({ error: `This ${duplicateField} is already in use. Choose a different ${duplicateField}.` });
     }
     throw error;
@@ -948,7 +939,7 @@ app.post('/api/security-guard/permissions', requireAuth, authorize('admin', 'dos
         subject,
         text,
         html: `<div style="font-family:Arial,sans-serif;max-width:600px;padding:24px;border-radius:12px;background:#f6fbff"><h2 style="color:#1d7b91;margin-bottom:8px">${subject}</h2><p><strong>Security guard permission:</strong> ${escapeHtml(title)}</p><p><strong>Valid from:</strong> ${escapeHtml(permissionStart)}</p><p><strong>Valid until:</strong> ${escapeHtml(permissionEnd)}</p><p>${escapeHtml(description || 'No additional details were provided.')}</p><p>This permission allows approval or rejection of visitor requests during the active period.</p></div>`,
-      }).catch(() => {});
+      }).catch(() => { });
     }
 
     return res.status(201).json({ enabled: true, permission });
@@ -993,7 +984,7 @@ app.post('/api/security-guard/visits', requireAuth, async (req, res) => {
     );
     const [[request]] = await pool.query('SELECT * FROM security_visit_requests WHERE id = ?', [result.insertId]);
     if (email) {
-      await sendVisitorRequestNotification({ to: email, name: fullName, status: 'pending', language, actorLabel: 'school guard' }).catch(() => {});
+      await sendVisitorRequestNotification({ to: email, name: fullName, status: 'pending', language, actorLabel: 'school guard' }).catch(() => { });
     }
     return res.status(201).json({ request: { ...request, photo: request.photo_data || null } });
   } catch (error) {
@@ -1034,7 +1025,7 @@ app.patch('/api/security-guard/visits/:id/status', requireAuth, authorize('admin
     const visitor = visitorRows[0] || currentRequest;
     const message = buildVisitorRequestMessage({ name: visitor.fullName || currentRequest.full_name, status, language: visitor.language || 'en', actorLabel });
     if (currentRequest.email) {
-      await sendVisitorRequestNotification({ to: currentRequest.email, name: currentRequest.full_name, status, language: currentRequest.language || 'en', actorLabel }).catch(() => {});
+      await sendVisitorRequestNotification({ to: currentRequest.email, name: currentRequest.full_name, status, language: currentRequest.language || 'en', actorLabel }).catch(() => { });
       await pool.query("INSERT INTO notifications (recipient_id, channel, title, message, sent_at) VALUES (?, 'in_app', ?, ?, NOW())", [req.user.sub, status === 'approved' ? 'Visitor approved' : status === 'rejected' ? 'Visitor rejected' : 'Visitor exited', message]);
     }
 
@@ -1116,8 +1107,8 @@ app.patch('/api/users/:id/role', requireAuth, authorize('admin'), async (req, re
   const userId = Number(req.params.id);
   if (!Number.isInteger(userId) || !roles.includes(req.body?.role)) return res.status(400).json({ error: 'A valid user id and role are required.' });
   if (userId === Number(req.user.sub) && req.body.role !== 'admin') return res.status(400).json({ error: 'You cannot remove your own admin role.' });
-  const [result] = await pool.query('UPDATE users SET role = ? WHERE id = ?', [req.body.role, userId]);
-  if (!result.affectedRows) return res.status(404).json({ error: 'User not found.' });
+  const [result] = await pool.query('UPDATE users SET role = ? WHERE id = ? RETURNING id', [req.body.role, userId]);
+  if (!result[0]) return res.status(404).json({ error: 'User not found in the active database.' });
   res.json({ message: 'User role updated.' });
 });
 
@@ -2245,7 +2236,7 @@ app.patch('/api/school-messages/:id/end', requireAuth, authorize('admin', 'dos')
 app.post('/api/school-messages/:id/resend-unviewed', requireAuth, authorize('admin', 'dos'), async (req, res) => {
   const [[message]] = await pool.query('SELECT title, body FROM school_messages WHERE id = ?', [req.params.id]); if (!message) return res.status(404).json({ error: 'Message not found.' });
   const [unviewed] = await pool.query('SELECT smr.user_id AS userId, u.email FROM school_message_recipients smr JOIN users u ON u.id = smr.user_id WHERE smr.message_id = ? AND smr.viewed_at IS NULL', [req.params.id]);
-  for (const person of unviewed) { await pool.query("INSERT INTO notifications (recipient_id, channel, title, message, sent_at) VALUES (?, 'in_app', ?, ?, NOW())", [person.userId, message.title, message.body]); if (person.email) sendPermissionEmail({ to: person.email, subject: message.title, text: message.body, html: `<p>${escapeHtml(message.body)}</p>` }).catch(() => {}); }
+  for (const person of unviewed) { await pool.query("INSERT INTO notifications (recipient_id, channel, title, message, sent_at) VALUES (?, 'in_app', ?, ?, NOW())", [person.userId, message.title, message.body]); if (person.email) sendPermissionEmail({ to: person.email, subject: message.title, text: message.body, html: `<p>${escapeHtml(message.body)}</p>` }).catch(() => { }); }
   res.json({ message: `Resent to ${unviewed.length} unviewed recipient(s).` });
 });
 
@@ -2379,7 +2370,7 @@ function departmentAttendanceScore(morningStatus, afternoonStatus) {
 }
 
 async function applyDepartmentScore(connection, userId, difference) {
-  await connection.query('INSERT INTO department_attendance_scores (user_id, score) VALUES (?, GREATEST(100 - ?, 0)) ON DUPLICATE KEY UPDATE score = GREATEST(score - ?, 0)', [userId, Math.max(0, difference), Math.max(0, difference)]);
+  await connection.query('INSERT INTO department_attendance_scores (user_id, score) VALUES (?, GREATEST(100 - ?, 0)) ON CONFLICT (user_id) DO UPDATE SET score = GREATEST(department_attendance_scores.score - $3, 0)', [userId, Math.max(0, difference), Math.max(0, difference)]);
 }
 
 app.get('/api/department-attendance/settings', requireAuth, authorize('admin', 'dos', ...departmentAttendanceRoles), async (req, res) => {
@@ -2394,7 +2385,7 @@ app.get('/api/department-attendance/settings', requireAuth, authorize('admin', '
     if (warningSession) {
       const [[record]] = await pool.query(`SELECT id, ${warningSession.key} AS warningSentDate FROM department_attendance WHERE user_id = ? AND attendance_date = ? LIMIT 1`, [req.user.sub, date]);
       if (record?.warningSentDate !== date) {
-        await pool.query(`INSERT INTO department_attendance (user_id, attendance_date, ${warningSession.key}) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE ${warningSession.key} = VALUES(${warningSession.key})`, [req.user.sub, date, date]);
+        await pool.query(`INSERT INTO department_attendance (user_id, attendance_date, ${warningSession.key}) VALUES (?, ?, ?) ON CONFLICT (user_id, attendance_date) DO UPDATE SET ${warningSession.key} = EXCLUDED.${warningSession.key}`, [req.user.sub, date, date]);
         const [[staffUser]] = await pool.query('SELECT email, full_name AS fullName FROM users WHERE id = ? LIMIT 1', [req.user.sub]);
         await pool.query("INSERT INTO notifications (recipient_id, channel, title, message, sent_at) VALUES (?, 'in_app', ?, ?, NOW())", [req.user.sub, warningSession.title, warningSession.message]);
         await sendPermissionEmail({ to: staffUser?.email, subject: 'FKAMS attendance reminder', text: `Dear ${staffUser?.fullName || req.user.role}, ${warningSession.message}`, html: `<p>Dear ${escapeHtml(staffUser?.fullName || req.user.role)},</p><p>${escapeHtml(warningSession.message)}</p>` });
@@ -2412,7 +2403,7 @@ app.put('/api/department-attendance/settings', requireAuth, authorize('admin'), 
   const morningCutoff = String(req.body?.morningCutoff || '').trim();
   const afternoonTime = String(req.body?.afternoonTime || '').trim();
   if (!locationName || !Number.isFinite(latitude) || !Number.isFinite(longitude) || !Number.isFinite(radiusMeters) || radiusMeters < 5 || !/^\d{2}:\d{2}(:\d{2})?$/.test(morningCutoff) || !/^\d{2}:\d{2}(:\d{2})?$/.test(afternoonTime)) return res.status(400).json({ error: 'Location, coordinates, radius (at least 5m), and valid morning/afternoon times are required.' });
-  await pool.query('INSERT INTO department_attendance_settings (id, location_name, latitude, longitude, radius_meters, morning_cutoff, afternoon_time, updated_by) VALUES (1, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE location_name = VALUES(location_name), latitude = VALUES(latitude), longitude = VALUES(longitude), radius_meters = VALUES(radius_meters), morning_cutoff = VALUES(morning_cutoff), afternoon_time = VALUES(afternoon_time), updated_by = VALUES(updated_by)', [locationName, latitude, longitude, radiusMeters, morningCutoff, afternoonTime, req.user.sub]);
+  await pool.query('INSERT INTO department_attendance_settings (id, location_name, latitude, longitude, radius_meters, morning_cutoff, afternoon_time, updated_by) VALUES (1, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (id) DO UPDATE SET location_name = EXCLUDED.location_name, latitude = EXCLUDED.latitude, longitude = EXCLUDED.longitude, radius_meters = EXCLUDED.radius_meters, morning_cutoff = EXCLUDED.morning_cutoff, afternoon_time = EXCLUDED.afternoon_time, updated_by = EXCLUDED.updated_by', [locationName, latitude, longitude, radiusMeters, morningCutoff, afternoonTime, req.user.sub]);
   res.json({ message: 'Department attendance location and times saved.' });
 });
 
@@ -2426,7 +2417,7 @@ app.get('/api/department-attendance', requireAuth, authorize('admin', 'dos', ...
     if (settings && currentTime() > String(settings.morning_cutoff)) {
       for (const person of staff) {
         const [[existingAttendance]] = await pool.query('SELECT morning_status AS morningStatus, score_deduction AS scoreDeduction FROM department_attendance WHERE user_id = ? AND attendance_date = CURRENT_DATE LIMIT 1', [person.id]);
-        await pool.query("INSERT INTO department_attendance (user_id, attendance_date, morning_status, score_deduction) VALUES (?, CURRENT_DATE, 'inactive', 1.5) ON DUPLICATE KEY UPDATE morning_status = COALESCE(morning_status, 'inactive'), score_deduction = GREATEST(score_deduction, 1.5)", [person.id]);
+        await pool.query("INSERT INTO department_attendance (user_id, attendance_date, morning_status, score_deduction) VALUES (?, CURRENT_DATE, 'inactive', 1.5) ON CONFLICT (user_id, attendance_date) DO UPDATE SET morning_status = COALESCE(department_attendance.morning_status, 'inactive'), score_deduction = GREATEST(department_attendance.score_deduction, 1.5)", [person.id]);
         if (!existingAttendance) await applyDepartmentScore(pool, person.id, 1.5);
       }
     }
@@ -2472,7 +2463,7 @@ app.patch('/api/department-attendance/:id', requireAuth, authorize('admin', 'dos
   const difference = nextDeduction - Number(record.score_deduction || 0);
   await pool.query('UPDATE department_attendance SET morning_status = ?, afternoon_status = ?, score_deduction = ? WHERE id = ?', [morningStatus, afternoonStatus, nextDeduction, req.params.id]);
   if (difference > 0) await applyDepartmentScore(pool, record.user_id, difference);
-  if (difference < 0) await pool.query('INSERT INTO department_attendance_scores (user_id, score) VALUES (?, ?) ON DUPLICATE KEY UPDATE score = LEAST(score + ?, 100)', [record.user_id, 100, Math.abs(difference)]);
+  if (difference < 0) await pool.query('INSERT INTO department_attendance_scores (user_id, score) VALUES (?, ?) ON CONFLICT (user_id) DO UPDATE SET score = LEAST(department_attendance_scores.score + $3, 100)', [record.user_id, 100, Math.abs(difference)]);
   res.json({ message: 'Attendance record updated.' });
 });
 
@@ -2481,13 +2472,19 @@ app.delete('/api/department-attendance/:id', requireAuth, authorize('admin', 'do
   const record = rows[0];
   if (!record || (req.user.role === 'dos' && record.role !== 'teacher')) return res.status(404).json({ error: 'Teacher attendance record not found.' });
   await pool.query('DELETE FROM department_attendance WHERE id = ?', [req.params.id]);
-  if (Number(record.scoreDeduction) > 0) await pool.query('INSERT INTO department_attendance_scores (user_id, score) VALUES (?, ?) ON DUPLICATE KEY UPDATE score = LEAST(score + ?, 100)', [record.userId, 100, record.scoreDeduction]);
+  if (Number(record.scoreDeduction) > 0) await pool.query('INSERT INTO department_attendance_scores (user_id, score) VALUES (?, ?) ON CONFLICT (user_id) DO UPDATE SET score = LEAST(department_attendance_scores.score + $3, 100)', [record.userId, 100, record.scoreDeduction]);
   res.json({ message: 'Attendance record deleted.' });
 });
 
 app.post('/api/department-attendance/check-in', requireAuth, (req, res, next) => {
-  if (!departmentAttendanceRoles.includes(req.user.role)) return res.status(403).json({ code: 'ROLE_NOT_ALLOWED', role: req.user.role, error: `Role '${req.user.role}' cannot record department attendance. Use a teacher, DOC/DOS, accountant, or librarian account.` });
-  next();
+  pool.query('SELECT role, is_active AS isActive FROM users WHERE id = ? LIMIT 1', [req.user.sub]).then(([rows]) => {
+    const currentUser = rows[0];
+    const role = String(currentUser?.role || '').trim().toLowerCase();
+    if (!currentUser || !currentUser.isActive) return res.status(403).json({ code: 'USER_NOT_ACTIVE', role, error: 'This account is missing or inactive. Sign in with an active staff account.' });
+    if (!['admin', ...departmentAttendanceRoles].includes(role)) return res.status(403).json({ code: 'ROLE_NOT_ALLOWED', role, error: `Role '${role || 'unknown'}' cannot record department attendance. Use an admin, teacher, DOC/DOS, accountant, or librarian account.` });
+    req.user.role = role;
+    next();
+  }).catch(next);
 }, upload.single('photo'), async (req, res) => {
   const session = req.body?.session === 'afternoon' ? 'afternoon' : 'morning';
   const latitude = Number(req.body?.latitude);
@@ -2502,7 +2499,7 @@ app.post('/api/department-attendance/check-in', requireAuth, (req, res, next) =>
   const distanceMeters = distanceInMeters(latitude, longitude, settings.latitude, settings.longitude);
   const allowedDistance = Number(settings.radius_meters) + gpsAccuracy;
   if (distanceMeters > allowedDistance) {
-    const [outside] = await pool.query('INSERT INTO department_attendance (user_id, attendance_date, latitude, longitude, distance_meters, outside_location_attempts) VALUES (?, ?, ?, ?, ?, 1) ON DUPLICATE KEY UPDATE latitude = VALUES(latitude), longitude = VALUES(longitude), distance_meters = VALUES(distance_meters), outside_location_attempts = outside_location_attempts + 1', [req.user.sub, todayDate(), latitude, longitude, distanceMeters]);
+    const [outside] = await pool.query('INSERT INTO department_attendance (user_id, attendance_date, latitude, longitude, distance_meters, outside_location_attempts) VALUES (?, ?, ?, ?, ?, 1) ON CONFLICT (user_id, attendance_date) DO UPDATE SET latitude = EXCLUDED.latitude, longitude = EXCLUDED.longitude, distance_meters = EXCLUDED.distance_meters, outside_location_attempts = department_attendance.outside_location_attempts + 1', [req.user.sub, todayDate(), latitude, longitude, distanceMeters]);
     const [[attempt]] = await pool.query('SELECT outside_location_attempts AS attempts FROM department_attendance WHERE user_id = ? AND attendance_date = ?', [req.user.sub, todayDate()]);
     if (Number(attempt?.attempts) >= 2) {
       const [admins] = await pool.query("SELECT id FROM users WHERE role IN ('admin', 'dos') AND is_active = TRUE");
@@ -2526,22 +2523,22 @@ app.post('/api/department-attendance/check-in', requireAuth, (req, res, next) =>
       await connection.rollback();
       return res.status(409).json({ code: 'ATTENDANCE_ALREADY_RECORDED', error: `${session} attendance has already been recorded. Ask admin to change the attendance time setting before recording again.` });
     }
-  const morningStatus = session === 'morning' ? (time <= String(settings.morning_cutoff) ? 'present' : 'late') : (existing?.morning_status || (time > String(settings.morning_cutoff) ? 'inactive' : null));
-  const afternoonStatus = session === 'afternoon'
-    ? (timeToMinutes(time) > timeToMinutes(settings.afternoon_time) + 10 ? 'inactive' : time >= String(settings.afternoon_time) ? 'on_time' : 'before_time')
-    : (existing?.afternoon_status || null);
-  const previousDeduction = Number(existing?.score_deduction || 0);
-  const scoreDeduction = departmentAttendanceScore(morningStatus, afternoonStatus);
-  const scoreDifference = scoreDeduction - previousDeduction;
-  let photoPath = null;
-  if (req.file) {
-    const photoName = `${req.file.filename}.jpg`;
-    fs.renameSync(req.file.path, path.join(uploadDirectory, photoName));
-    photoPath = `/uploads/${photoName}`;
-  }
-    await connection.query('INSERT INTO department_attendance (user_id, attendance_date, morning_status, afternoon_status, morning_at, afternoon_at, latitude, longitude, distance_meters, morning_photo_path, afternoon_photo_path, score_deduction, outside_location_attempts, attendance_settings_updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?) ON DUPLICATE KEY UPDATE morning_status = VALUES(morning_status), afternoon_status = VALUES(afternoon_status), morning_at = COALESCE(VALUES(morning_at), morning_at), afternoon_at = COALESCE(VALUES(afternoon_at), afternoon_at), latitude = VALUES(latitude), longitude = VALUES(longitude), distance_meters = VALUES(distance_meters), morning_photo_path = COALESCE(VALUES(morning_photo_path), morning_photo_path), afternoon_photo_path = COALESCE(VALUES(afternoon_photo_path), afternoon_photo_path), score_deduction = VALUES(score_deduction), attendance_settings_updated_at = VALUES(attendance_settings_updated_at)', [req.user.sub, date, morningStatus, afternoonStatus, session === 'morning' ? now : null, session === 'afternoon' ? now : null, latitude, longitude, distanceMeters, session === 'morning' ? photoPath : null, session === 'afternoon' ? photoPath : null, scoreDeduction, settings.settingsUpdatedAt]);
+    const morningStatus = session === 'morning' ? (time <= String(settings.morning_cutoff) ? 'present' : 'late') : (existing?.morning_status || (time > String(settings.morning_cutoff) ? 'inactive' : null));
+    const afternoonStatus = session === 'afternoon'
+      ? (timeToMinutes(time) > timeToMinutes(settings.afternoon_time) + 10 ? 'inactive' : time >= String(settings.afternoon_time) ? 'on_time' : 'before_time')
+      : (existing?.afternoon_status || null);
+    const previousDeduction = Number(existing?.score_deduction || 0);
+    const scoreDeduction = departmentAttendanceScore(morningStatus, afternoonStatus);
+    const scoreDifference = scoreDeduction - previousDeduction;
+    let photoPath = null;
+    if (req.file) {
+      const photoName = `${req.file.filename}.jpg`;
+      fs.renameSync(req.file.path, path.join(uploadDirectory, photoName));
+      photoPath = `/uploads/${photoName}`;
+    }
+    await connection.query('INSERT INTO department_attendance (user_id, attendance_date, morning_status, afternoon_status, morning_at, afternoon_at, latitude, longitude, distance_meters, morning_photo_path, afternoon_photo_path, score_deduction, outside_location_attempts, attendance_settings_updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?) ON CONFLICT (user_id, attendance_date) DO UPDATE SET morning_status = EXCLUDED.morning_status, afternoon_status = EXCLUDED.afternoon_status, morning_at = COALESCE(EXCLUDED.morning_at, department_attendance.morning_at), afternoon_at = COALESCE(EXCLUDED.afternoon_at, department_attendance.afternoon_at), latitude = EXCLUDED.latitude, longitude = EXCLUDED.longitude, distance_meters = EXCLUDED.distance_meters, morning_photo_path = COALESCE(EXCLUDED.morning_photo_path, department_attendance.morning_photo_path), afternoon_photo_path = COALESCE(EXCLUDED.afternoon_photo_path, department_attendance.afternoon_photo_path), score_deduction = EXCLUDED.score_deduction, attendance_settings_updated_at = EXCLUDED.attendance_settings_updated_at', [req.user.sub, date, morningStatus, afternoonStatus, session === 'morning' ? now : null, session === 'afternoon' ? now : null, latitude, longitude, distanceMeters, session === 'morning' ? photoPath : null, session === 'afternoon' ? photoPath : null, scoreDeduction, settings.settingsUpdatedAt]);
     if (scoreDifference > 0) await applyDepartmentScore(connection, req.user.sub, scoreDifference);
-    if (scoreDifference < 0) await connection.query('INSERT INTO department_attendance_scores (user_id, score) VALUES (?, 100) ON DUPLICATE KEY UPDATE score = LEAST(score + ?, 100)', [req.user.sub, Math.abs(scoreDifference)]);
+    if (scoreDifference < 0) await connection.query('INSERT INTO department_attendance_scores (user_id, score) VALUES (?, 100) ON CONFLICT (user_id) DO UPDATE SET score = LEAST(department_attendance_scores.score + $2, 100)', [req.user.sub, Math.abs(scoreDifference)]);
     await connection.commit();
   } catch (error) { await connection.rollback(); throw error; } finally { connection.release(); }
   const [[scoreRecord]] = await pool.query('SELECT COALESCE(score, 100) AS scoreRemaining FROM department_attendance_scores WHERE user_id = ? LIMIT 1', [req.user.sub]);
@@ -2798,7 +2795,7 @@ app.get('/api/finance/invoices', requireAuth, async (req, res) => {
   query += ' ORDER BY i.due_date DESC'; const [rows] = await pool.query(query, params); res.json({ invoices: rows });
 });
 
-app.post('/api/finance/payments', requireAuth, authorize('accountant'), async (req, res) => {
+app.post('/api/finance/payments', requireAuth, authorize('admin', 'dos', 'accountant'), async (req, res) => {
   const studentId = Number(req.body?.studentId); const amount = Number(req.body?.amount);
   if (!Number.isInteger(studentId) || !Number.isFinite(amount) || amount <= 0 || !req.body.reference?.trim()) return res.status(400).json({ error: 'Student, positive amount and payment reference are required.' });
   const [result] = await pool.query('INSERT INTO fees (student_id, amount, reference) VALUES (?, ?, ?)', [studentId, amount, req.body.reference.trim()]);
@@ -2871,7 +2868,7 @@ app.post('/api/homework', requireAuth, authorize('admin', 'dos', 'teacher'), asy
 
 app.get('/api/notifications', requireAuth, async (req, res) => { const [rows] = await pool.query('SELECT id, channel, title, message, sent_at AS sentAt, read_at AS readAt, created_at AS createdAt FROM notifications WHERE recipient_id = ? ORDER BY created_at DESC LIMIT 100', [req.user.sub]); res.json({ notifications: rows }); });
 app.patch('/api/notifications/:id/read', requireAuth, async (req, res) => { const [result] = await pool.query('UPDATE notifications SET read_at = NOW() WHERE id = ? AND recipient_id = ?', [req.params.id, req.user.sub]); if (!result.affectedRows) return res.status(404).json({ error: 'Notification not found.' }); res.json({ message: 'Notification marked as read.' }); });
-app.post('/api/notifications', requireAuth, authorize('admin', 'dos'), async (req, res) => { const recipientId = Number(req.body?.recipientId); const error = bodyErrors(req.body, [['title', 'Title', 180], ['message', 'Message', 5000]]); const channels = ['in_app', 'email', 'sms', 'whatsapp']; if (error || !Number.isInteger(recipientId) || !channels.includes(req.body.channel)) return res.status(400).json({ error: error || 'Recipient, channel, title and message are required.' }); const [result] = await pool.query('INSERT INTO notifications (recipient_id, channel, title, message, sent_at) VALUES (?, ?, ?, ?, NOW())', [recipientId, req.body.channel, req.body.title.trim(), req.body.message.trim()]); if (req.body.channel === 'whatsapp') { const [userRows] = await pool.query('SELECT full_name AS fullName, phone FROM users WHERE id = ? LIMIT 1', [recipientId]); const user = userRows[0]; if (user?.phone) { await sendWhatsAppNotification({ to: user.phone, name: user.fullName || 'Customer', message: req.body.message.trim() }).catch(() => {}); } } res.status(201).json({ id: result.insertId, message: 'Notification queued.' }); });
+app.post('/api/notifications', requireAuth, authorize('admin', 'dos'), async (req, res) => { const recipientId = Number(req.body?.recipientId); const error = bodyErrors(req.body, [['title', 'Title', 180], ['message', 'Message', 5000]]); const channels = ['in_app', 'email', 'sms', 'whatsapp']; if (error || !Number.isInteger(recipientId) || !channels.includes(req.body.channel)) return res.status(400).json({ error: error || 'Recipient, channel, title and message are required.' }); const [result] = await pool.query('INSERT INTO notifications (recipient_id, channel, title, message, sent_at) VALUES (?, ?, ?, ?, NOW())', [recipientId, req.body.channel, req.body.title.trim(), req.body.message.trim()]); if (req.body.channel === 'whatsapp') { const [userRows] = await pool.query('SELECT full_name AS fullName, phone FROM users WHERE id = ? LIMIT 1', [recipientId]); const user = userRows[0]; if (user?.phone) { await sendWhatsAppNotification({ to: user.phone, name: user.fullName || 'Customer', message: req.body.message.trim() }).catch(() => { }); } } res.status(201).json({ id: result.insertId, message: 'Notification queued.' }); });
 
 require('./test-builder-endpoints')({ app, pool, requireAuth, authorize, bodyErrors, positiveNumber });
 require('./announcements-endpoints')({ app, pool, requireAuth });

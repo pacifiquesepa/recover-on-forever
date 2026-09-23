@@ -422,15 +422,45 @@ class AssessmentService:
             question.answer = order.index(question.answer)
 
     def _bank_for(self, subject: str, unit: str, topic: str, difficulty: str, question_type: str) -> List[Dict[str, Any]]:
-        trained = [item for item in self.trained if item.get("type") == question_type and item.get("difficulty", difficulty) == difficulty and str(item.get("metadata", {}).get("subject", subject)).lower() == subject.lower() and (not unit or not str(item.get("metadata", {}).get("unit", "")).strip() or str(item.get("metadata", {}).get("unit", "")).lower() in {unit.lower(), "all units"}) and (not topic or topic.endswith(" activities") or not str(item.get("metadata", {}).get("topic", "")).strip() or str(item.get("metadata", {}).get("topic", "")).lower() == topic.lower())]
+        requested_subject = str(subject or "").lower()
+        requested_unit = self._scope_value(unit)
+        trained = [
+            item for item in self.trained
+            if item.get("type") == question_type
+            and str(item.get("difficulty", difficulty)).lower() == difficulty.lower()
+            and str(item.get("metadata", {}).get("subject", subject)).lower() == requested_subject
+            and (
+                not unit
+                or not str(item.get("metadata", {}).get("unit", "")).strip()
+                or str(item.get("metadata", {}).get("unit", "")).lower() == "all units"
+                or self._same_scope(item.get("metadata", {}).get("unit"), requested_unit)
+            )
+            and (
+                not topic
+                or topic.endswith(" activities")
+                or not str(item.get("metadata", {}).get("topic", "")).strip()
+                or str(item.get("metadata", {}).get("topic", "")).lower() == topic.lower()
+            )
+        ]
         if trained:
             return trained
-        unit_bank = self.advanced.get(subject, {}).get(topic, {}).get("units", {}).get(unit, {}).get(difficulty, {}).get(question_type, [])
-        if unit_bank:
-            return unit_bank
-        advanced_bank = self.advanced.get(subject, {}).get(topic, {}).get(difficulty, {}).get(question_type, [])
-        if advanced_bank:
-            return advanced_bank
+        if isinstance(self.advanced, dict):
+            advanced_subject = str(self.advanced.get("subject", "")).lower()
+            if not advanced_subject or advanced_subject == requested_subject:
+                unit_bank = self.advanced.get("units", {}).get(unit, {}).get("assessment_matrix", {}).get(difficulty, {}).get(question_type, [])
+                if not unit_bank and unit:
+                    for bank_unit, bank_data in self.advanced.get("units", {}).items():
+                        if self._same_scope(bank_unit, requested_unit):
+                            unit_bank = bank_data.get("assessment_matrix", {}).get(difficulty, {}).get(question_type, [])
+                            break
+                if unit_bank:
+                    return unit_bank
+            unit_bank = self.advanced.get(subject, {}).get(topic, {}).get("units", {}).get(unit, {}).get(difficulty, {}).get(question_type, [])
+            if unit_bank:
+                return unit_bank
+            advanced_bank = self.advanced.get(subject, {}).get(topic, {}).get(difficulty, {}).get(question_type, [])
+            if advanced_bank:
+                return advanced_bank
         level_bank = self.curriculum.get(subject, {}).get(topic, {}).get("levels", {}).get(difficulty, [])
         return level_bank if isinstance(level_bank, list) and question_type == "multiple_choice" else []
 

@@ -1,15 +1,7 @@
 require('dotenv').config();
 
 const bcrypt = require('bcryptjs');
-const mysql = require('mysql2/promise');
-
-const config = {
-  host: process.env.DB_HOST || 'localhost',
-  port: Number(process.env.DB_PORT || 3306),
-  user: process.env.DB_USER || 'root',
-  password: process.env.DB_PASSWORD || '',
-  database: process.env.DB_NAME || 'fkams',
-};
+const { createPool } = require('./db');
 
 async function seedAdmin() {
   const username = process.env.ADMIN_USERNAME || 'pacifiquesepa';
@@ -18,24 +10,26 @@ async function seedAdmin() {
   const email = process.env.ADMIN_EMAIL || 'pacifiquesepa@gmail.com';
   const phone = process.env.ADMIN_PHONE || "0793360920";
   const passwordHash = await bcrypt.hash(password, 12);
-  const connection = await mysql.createConnection(config);
+  const pool = createPool();
+  const connection = await pool.getConnection();
 
   try {
-    await connection.execute(
+    await connection.query(
       `INSERT INTO users (full_name, username, email, phone, password_hash, role, is_active)
        VALUES (?, ?, ?, ?, ?, 'admin', TRUE)
-       ON DUPLICATE KEY UPDATE
-         full_name = VALUES(full_name),
-         email = VALUES(email),
-         phone = VALUES(phone),
-         password_hash = VALUES(password_hash),
+       ON CONFLICT (username) DO UPDATE SET
+         full_name = EXCLUDED.full_name,
+         email = EXCLUDED.email,
+         phone = EXCLUDED.phone,
+         password_hash = EXCLUDED.password_hash,
          role = 'admin',
          is_active = TRUE`,
       [fullName, username, email, phone, passwordHash],
     );
     console.log(`Default admin is ready: ${username}`);
   } finally {
-    await connection.end();
+    connection.release();
+    await pool.end();
   }
 }
 

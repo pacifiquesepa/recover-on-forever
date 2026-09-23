@@ -17,10 +17,6 @@ CREATE TABLE IF NOT EXISTS student_promotions (
   FOREIGN KEY (created_by) REFERENCES users(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-ALTER TABLE student_promotions
-  MODIFY COLUMN from_level VARCHAR(80) NOT NULL,
-  MODIFY COLUMN to_level VARCHAR(80) NULL;
-
 ALTER TABLE subjects
   ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE;
 
@@ -29,14 +25,14 @@ ALTER TABLE students
 ADD COLUMN IF NOT EXISTS graduation_date DATE NULL,
 ADD COLUMN IF NOT EXISTS graduated_cohort VARCHAR(100) NULL;
 
--- Create a view for easy access to current graduates
-CREATE OR REPLACE VIEW v_graduates AS
+DROP VIEW IF EXISTS v_graduates;
+CREATE VIEW v_graduates AS
 SELECT 
   s.id,
   s.user_id,
   s.full_name,
-  SUBSTRING_INDEX(s.full_name, ' ', 1) as first_name,
-  SUBSTRING_INDEX(s.full_name, ' ', -1) as last_name,
+  split_part(s.full_name, ' ', 1) as first_name,
+  split_part(s.full_name, ' ', array_length(string_to_array(s.full_name, ' '), 1)) as last_name,
   s.admission_number as reg_number,
   s.photo_key,
   s.class_name as from_level,

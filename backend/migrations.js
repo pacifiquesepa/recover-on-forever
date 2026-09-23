@@ -5,27 +5,54 @@
 
 const fs = require('fs');
 const path = require('path');
+const { normalizeSql } = require('./db');
+
+function splitStatements(sql) {
+    return sql
+        .split(/\r?\n/)
+        .filter(line => !line.trim().startsWith('--'))
+        .join('\n')
+        .split(';')
+        .map(stmt => stmt.trim())
+        .filter(stmt => stmt.length > 0 && !stmt.startsWith('--'))
+        .filter(stmt => !/^(SET|PREPARE|EXECUTE|DEALLOCATE)\b/i.test(stmt))
+        .map(normalizeSql);
+}
+
+function isIgnorableMigrationError(error) {
+    return error.code === '42P07' || error.code === '42701' || error.code === '42710'
+        || error.code === 'ER_TABLE_EXISTS_ERROR' || error.code === 'ER_DUP_FIELDNAME'
+        || error.code === 'ER_DUP_KEYNAME' || error.code === 'ER_FK_DUP_NAME'
+        || /already exists|duplicate/i.test(error.message);
+}
 
 async function runPendingMigrations(pool) {
     console.log('🔄 Checking for pending migrations...');
 
     const migrationsDir = path.join(__dirname, 'migrations');
     const migrationFiles = fs.readdirSync(migrationsDir)
-        .filter(f => ['011_behavior_scores.sql', '012_behavior_record_scores.sql', '013_user_profile_photo.sql', '014_graduates_promotions.sql', '015_attendance_workflow.sql', '016_admission_notifications.sql', '017_application_files.sql', '018_delayed_admission_enrollment.sql', '019_subject_notes.sql', '020_subject_modules.sql', '021_finance_evidence.sql', '022_transport_tables.sql', '023_inventory_transactions.sql', '028_department_attendance_on_loc.sql', '029_application_review_codes.sql', '030_admission_credentials.sql', '031_parent_profiles.sql', '032_school_communications.sql', '033_school_message_notes.sql', '034_security_guard_visitors.sql'].includes(f))
+        .filter(f => /^\d+_.*\.sql$/.test(f))
         .sort();
+
+    await pool.query('CREATE EXTENSION IF NOT EXISTS pgcrypto');
+    const baseSchema = fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf-8');
+    const baseStatements = splitStatements(baseSchema).map(statement => statement.replace(/CREATE TABLE(?! IF NOT EXISTS)/gi, 'CREATE TABLE IF NOT EXISTS'));
+    const baseConnection = await pool.getConnection();
+    try {
+        for (const statement of baseStatements) {
+            try { await baseConnection.query(statement); } catch (error) {
+                if (!isIgnorableMigrationError(error)) throw error;
+            }
+        }
+        console.log('  ✓ schema.sql');
+    } finally {
+        baseConnection.release();
+    }
 
     for (const file of migrationFiles) {
         const migrationPath = path.join(migrationsDir, file);
         const sql = fs.readFileSync(migrationPath, 'utf-8');
-
-        // Split by semicolon and execute each statement
-        const statements = sql
-            .split(/\r?\n/)
-            .filter(line => !line.trim().startsWith('--'))
-            .join('\n')
-            .split(';')
-            .map(stmt => stmt.trim())
-            .filter(stmt => stmt.length > 0 && !stmt.startsWith('--'));
+        const statements = splitStatements(sql);
 
         const connection = await pool.getConnection();
         try {
@@ -34,13 +61,7 @@ async function runPendingMigrations(pool) {
                     await connection.query(statement);
                 } catch (err) {
                     // Allow "already exists" errors - they're not failures
-                    if (
-                        err.code === 'ER_TABLE_EXISTS_ERROR' ||
-                        err.code === 'ER_DUP_FIELDNAME' ||
-                        err.code === 'ER_DUP_KEYNAME' ||
-                        err.code === 'ER_FK_DUP_NAME' ||
-                        err.message.includes('already exists')
-                    ) {
+                    if (isIgnorableMigrationError(err)) {
                         // Silently skip
                         continue;
                     }

@@ -270,7 +270,7 @@ response.data.groups.forEach(group => {
 
 - Results are limited to 5000 students max
 - Index on `(student_id, academic_year_id)` ensures quick promotion lookups
-- Views are materialized by MySQL for fast queries
+- Views are materialized by PostgreSQL for fast queries
 - Use pagination in frontend if showing more than 1000 records at once
 
 ---
