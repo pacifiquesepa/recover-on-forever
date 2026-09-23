@@ -36,10 +36,10 @@ const uploadDirectory = path.join(__dirname, 'uploads');
 fs.mkdirSync(uploadDirectory, { recursive: true });
 const upload = multer({ dest: uploadDirectory, limits: { fileSize: 10 * 1024 * 1024 } });
 const jwtSecret = process.env.JWT_SECRET;
-const allowedOrigin = process.env.FRONTEND_ORIGIN || 'http://localhost:5173';
+const allowedOrigin = process.env.FRONTEND_ORIGIN || 'https://foreverkingacademy.vercel.app';
 const allowedOrigins = new Set([
   allowedOrigin,
-  'http://localhost:5173',
+  'https://foreverkingacademy.vercel.app',
   'http://localhost:5174',
   'http://localhost:5175',
   'http://127.0.0.1:5173',
